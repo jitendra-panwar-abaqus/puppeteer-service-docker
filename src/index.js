@@ -437,10 +437,18 @@ app.post('/pdf', async (req, res) => {
           <span style="color:#6b7280; font-weight:500; margin-right:4px;">
             User:
           </span>
-          <span style="color:#6b7280; font-weight:500;">
-            ${headerInfo?.user || ''}
+          <span style="color:#111; font-weight:600;">
+            ${headerInfo?.user || 'N/A'}
           </span>
         </div>
+        <div style="font-size:10px; margin-top:2px;">
+          <span style="color:#6b7280; font-weight:500; margin-right:4px;">
+            Location:
+          </span>
+          <span style="color:#111;">
+            ${headerInfo?.location || 'N/A'}
+          </span>
+      </div>
       </td>
 
       <!-- RIGHT -->
@@ -449,7 +457,7 @@ app.post('/pdf', async (req, res) => {
           Submitted on
         </div>
         <div style="font-weight:500; color:#111; font-size:10px;">
-          ${headerInfo?.date || ''}
+          ${headerInfo?.date || 'N/A'}
         </div>
       </td>
 
