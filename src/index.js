@@ -2,6 +2,7 @@ const express = require('express');
 const puppeteer = require('puppeteer-core');
 const rateLimit = require('express-rate-limit');
 const archiver = require('archiver');
+const pLimit = require('p-limit');
 
 const app = express();
 
@@ -472,9 +473,6 @@ app.post('/pdf', async (req, res) => {
 
 
 
-
-
-
 /**
  * Batch PDF generation endpoint (returns a ZIP file)
  */
@@ -490,108 +488,110 @@ app.post('/pdf-batch', async (req, res) => {
     }
 
     /* -------------------------------------------------------
+       INITIALIZE ZIP STREAM IMMEDIATELY
+    ------------------------------------------------------- */
+    // Set headers for ZIP download right away
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="batch-documents-${Date.now()}.zip"`);
+
+    const archive = archiver('zip', {
+      zlib: { level: 9 } // Maximum compression
+    });
+
+    archive.on('warning', function (err) {
+      if (err.code === 'ENOENT') {
+        console.warn('Archiver warning:', err);
+      } else {
+        throw err;
+      }
+    });
+
+    archive.on('error', function (err) {
+      throw err;
+    });
+
+    // Pipe archive data directly to the HTTP response
+    archive.pipe(res);
+
+    /* -------------------------------------------------------
        LAUNCH PUPPETEER ONCE FOR THE ENTIRE BATCH
     ------------------------------------------------------- */
     // Assuming launchBrowser() is defined elsewhere in your code
     browser = await launchBrowser();
 
-    // Array to store generated PDF buffers in memory
-    const generatedPdfs = [];
+    /* -------------------------------------------------------
+       SET CONCURRENCY LIMIT (Processing 5 PDFs simultaneously)
+    ------------------------------------------------------- */
+    const limit = pLimit(5);
 
     /* -------------------------------------------------------
-       LOOP THROUGH EACH ITEM IN THE ARRAY
+       MAP ITEMS TO CONCURRENT PROMISES
     ------------------------------------------------------- */
-    for (let i = 0; i < batch.length; i++) {
-      try {
-        const item = batch[i];
-        const { html, url, domainName, headerInfo = {}, fields = {} } = item;
+    const processingPromises = batch.map((item, i) => limit(async () => {
+      const { html, url, domainName, headerInfo = {}, fields = {} } = item;
 
-        if (!html && !url) {
-          console.warn(`Item ${i} skipped: Missing html or url`);
-          continue; // Skip invalid items
-        }
+      if (!html && !url) {
+        console.warn(`Item ${i} skipped: Missing html or url`);
+        return; // Skip invalid items
+      }
 
-        if (url && !validateUrl(url)) {
-          console.warn(`Item ${i} skipped: Invalid URL`);
-          continue;
-        }
+      if (url && !validateUrl(url)) {
+        console.warn(`Item ${i} skipped: Invalid URL`);
+        return;
+      }
 
-        /* -------------------------------------------------------
-           FETCH BINARY DATA (SIGNATURES / FILE INPUTS)
-        ------------------------------------------------------- */
-        const fieldData = {};
-        for (const key of Object.keys(fields)) {
-          const data = fields[key];
-          if (!data) continue;
-
-          if ((data.includes('amazonaws.com')) && (data.startsWith('http://') || data.startsWith('https://'))) {
-            try {
-              const response = await fetch(
-                `${domainName}/track/mgt?page=displayS3Data&pageName=formDataDisplay`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
-                  },
-                  body: new URLSearchParams({ txnID: data }).toString()
-                }
-              );
-              fieldData[key] = await response.text();
-            } catch (err) {
-              console.error(`Binary fetch failed for item ${i}, key: ${key}`, err);
-              fieldData[key] = null;
-            }
+      /* -------------------------------------------------------
+         FETCH BINARY DATA (SIGNATURES / FILE INPUTS) IN PARALLEL
+      ------------------------------------------------------- */
+      const fieldData = {};
+      const fetchPromises = Object.entries(fields).map(async ([key, data]) => {
+        if (data && typeof data === 'string' && data.includes('amazonaws.com') && (data.startsWith('http://') || data.startsWith('https://'))) {
+          try {
+            const response = await fetch(
+              `${domainName}/track/mgt?page=displayS3Data&pageName=formDataDisplay`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body: new URLSearchParams({ txnID: data }).toString()
+              }
+            );
+            fieldData[key] = await response.text();
+          } catch (err) {
+            console.error(`Binary fetch failed for item ${i}, key: ${key}`, err);
+            fieldData[key] = null;
           }
         }
+      });
 
-        /* -------------------------------------------------------
-           PROCESS PAGE
-        ------------------------------------------------------- */
-        const page = await browser.newPage();
-        page.on('console', msg => console.log(`PAGE ${i}:`, msg.text()));
+      // Wait for all fetches for this specific page to complete simultaneously
+      await Promise.all(fetchPromises);
 
+      /* -------------------------------------------------------
+         PROCESS PAGE
+      ------------------------------------------------------- */
+      const page = await browser.newPage();
+      page.on('console', msg => console.log(`PAGE ${i}:`, msg.text()));
+
+      try {
         if (url) {
-          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          // networkidle0 waits until there are no more than 0 network connections for at least 500ms
+          await page.goto(url, { waitUntil: 'networkidle0', timeout: 60000 });
         } else {
-          await page.setContent(html, { waitUntil: 'domcontentloaded' });
+          await page.setContent(html, { waitUntil: ['domcontentloaded', 'networkidle0'] });
         }
 
         /* -------------------------------------------------------
            WAIT FOR LOADERS / SPINNERS TO DISAPPEAR
         ------------------------------------------------------- */
-        await page.evaluate(async () => {
-          const waitFor = (fn, timeout = 30000) =>
-            new Promise((resolve, reject) => {
-              const start = Date.now();
-              const timer = setInterval(() => {
-                if (fn()) {
-                  clearInterval(timer);
-                  resolve();
-                }
-                if (Date.now() - start > timeout) {
-                  clearInterval(timer);
-                  reject('Timeout waiting for UI');
-                }
-              }, 300);
-            });
-
-          await waitFor(() => {
-            const spinner =
-              document.querySelector('.loading') ||
-              document.querySelector('.spinner') ||
-              document.querySelector('[class*="loading"]') ||
-              document.querySelector('[class*="spinner"]') ||
-              document.querySelector('[aria-busy="true"]');
-
-            return !spinner || spinner.offsetParent === null;
-          });
-        });
-
-        /* -------------------------------------------------------
-           LET UI STABILIZE
-        ------------------------------------------------------- */
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        await page.evaluate(() => document.body.offsetHeight);
+        await page.waitForFunction(() => {
+          const spinners = document.querySelectorAll(
+            '.loading, .spinner, [class*="loading"], [class*="spinner"], [aria-busy="true"]'
+          );
+          // Return true only when all spinners are hidden from the layout
+          return Array.from(spinners).every(el => el.offsetParent === null);
+        }, { timeout: 30000 });
 
         /* -------------------------------------------------------
            PRINT CSS (CRITICAL)
@@ -700,6 +700,7 @@ app.post('/pdf-batch', async (req, res) => {
         /* -------------------------------------------------------
            FINAL WAIT & GENERATE PDF BUFFER
         ------------------------------------------------------- */
+        // A brief pause just to ensure canvas paints are committed before snapshot
         await new Promise(resolve => setTimeout(resolve, 500));
 
         const pdfBuffer = await page.pdf({
@@ -737,69 +738,41 @@ app.post('/pdf-batch', async (req, res) => {
         const formName = (headerInfo?.formName || `form`).replace(/[^a-z0-9]/gi, '_');
         const filename = `${formName}_${userName}_${Date.now()}.pdf`;
 
-        generatedPdfs.push({ filename, buffer: pdfBuffer });
+        /* -------------------------------------------------------
+           STREAM DIRECTLY TO ARCHIVE (Frees Memory Instantly)
+        ------------------------------------------------------- */
+        archive.append(Buffer.from(pdfBuffer), { name: filename });
 
-
-        // Clean up page resources immediately after use
-        await page.close();
       } catch (itemErr) {
         console.error(`Error processing item ${i}:`, itemErr);
         // Continue with next items even if one fails
+      } finally {
+        // Clean up page resources immediately after use
+        await page.close();
       }
-    }
+    }));
 
     /* -------------------------------------------------------
-       ZIP THE PDFS AND STREAM TO RESPONSE
+       WAIT FOR ALL CONCURRENT PROCESSES TO FINISH
     ------------------------------------------------------- */
-    if (generatedPdfs.length === 0) {
-      return res.status(400).json({ error: 'No valid documents could be generated.' });
-    }
+    await Promise.all(processingPromises);
 
-    // Set headers for ZIP download
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="batch-documents-${Date.now()}.zip"`);
-
-    // Initialize archiver
-    const archive = archiver('zip', {
-      zlib: { level: 9 } // Sets the compression level
-    });
-
-    // Listen for warnings/errors on the archiver
-    archive.on('warning', function (err) {
-      if (err.code === 'ENOENT') {
-        console.warn('Archiver warning:', err);
-      } else {
-        throw err;
-      }
-    });
-
-    archive.on('error', function (err) {
-      throw err;
-    });
-
-    // Pipe archive data directly to the HTTP response
-    archive.pipe(res);
-
-
-    // Append every PDF buffer to the ZIP (Convert to Buffer explicitly)
-    for (const pdf of generatedPdfs) {
-      archive.append(Buffer.from(pdf.buffer), { name: pdf.filename });
-    }
-
-    // Finalize the archive (this will finish the stream and close the connection properly)
+    /* -------------------------------------------------------
+       FINALIZE THE STREAM
+    ------------------------------------------------------- */
+    // This finishes the ZIP stream and safely closes the HTTP connection
     await archive.finalize();
 
   } catch (err) {
     console.error('BATCH PDF ERROR:', err);
-    // If headers haven't been sent yet, send a JSON error
     if (!res.headersSent) {
       res.status(500).json({ error: 'Batch PDF generation failed', message: err.message });
     }
   } finally {
-    // Make sure we close the browser out entirely to avoid zombie processes
     if (browser) await browser.close();
   }
 });
+
 
 /**
  * PDF generation endpoint
