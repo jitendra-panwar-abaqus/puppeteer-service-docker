@@ -288,13 +288,22 @@ app.post('/pdf', async (req, res) => {
 
     await page.addStyleTag({
       content: `
-        body { margin:0; padding:0; background:white; }
+        body { margin:0; padding:0; background:white !important; }
         table { width:100%; border-collapse:collapse; page-break-inside:auto; }
         tr { page-break-inside:avoid; }
         thead { display:table-header-group; }
         canvas { display:block; page-break-inside:avoid; }
         .loading, .spinner { display:none !important; }
-      `
+        @page {
+          margin-top: 70px; /* Matches the margin in page.pdf */
+          margin-bottom: 60px;
+        }
+        input[value="Done"], 
+        input[value="done"],
+        button[value="Done"] {
+          display:none !important;
+        }
+          `
     });
 
     const PDF_MARGIN = 40;
@@ -331,8 +340,11 @@ app.post('/pdf', async (req, res) => {
         // Replace tokens in the format string
         return fmt
           .replace(/YYYY/g, yyyy)
+          .replace(/yyyy/g, yyyy)
           .replace(/YY/g, yy)
+          .replace(/yy/g, yy)
           .replace(/MM/g, mm)
+          .replace(/mm/g, mm)
           .replace(/DD/g, dd)
           .replace(/dd/g, dd); // Handle lowercase dd too
       };
@@ -341,7 +353,7 @@ app.post('/pdf', async (req, res) => {
       for (const [name, value] of Object.entries(fields)) {
         const el = document.querySelector(`[name="${name}"]`) || document.getElementById(name);
         if (!el) continue;
-
+        
 
         // IMPORTANT: never set value for file inputs (browser security restriction)
         if (el.tagName === 'INPUT' && el.type === 'file') {
@@ -367,6 +379,8 @@ app.post('/pdf', async (req, res) => {
           el.style.wordWrap = 'break-word';
         } else if ('value' in el) {
           el.value = value ?? '';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
         }
       }
 
@@ -443,6 +457,8 @@ app.post('/pdf', async (req, res) => {
     ------------------------------------------------------- */
     const pdf = await page.pdf({
       format: 'A4',
+      //landscape: true,
+      scale: 0.9,
       printBackground: true,
       preferCSSPageSize: true,
       margin: { top: '70px', bottom: '60px', left: '40px', right: '40px' },
@@ -458,7 +474,7 @@ app.post('/pdf', async (req, res) => {
   
   <table style="width:100%; border-bottom:1px solid #e5e7eb; padding-bottom:6px;">
     <tr>
-      <td style="text-align:left; vertical-align:middle;">
+      <td style="text-align:center; vertical-align:middle;">
         <div style="font-size:11px; color:#6b7280;">
           
           <span style="font-weight:550;">Form Name:</span>
