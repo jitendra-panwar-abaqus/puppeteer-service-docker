@@ -610,7 +610,7 @@ app.post('/connector-pdf', async (req, res) => {
 
     await page.addStyleTag({
       content: `
-        body { margin:0; padding:0; background:white !important; }
+        body { margin:0; padding:0; background:white; }
         table { width:100%; border-collapse:collapse; page-break-inside:auto; }
         tr { page-break-inside:avoid; }
         thead { display:table-header-group; }
@@ -625,7 +625,7 @@ app.post('/connector-pdf', async (req, res) => {
         button[value="Done"] {
           display:none !important;
         }
-          `
+        `
     });
 
     const PDF_MARGIN = 40;
@@ -701,8 +701,6 @@ app.post('/connector-pdf', async (req, res) => {
           el.style.wordWrap = 'break-word';
         } else if ('value' in el) {
           el.value = value ?? '';
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
         }
       }
 
@@ -779,8 +777,6 @@ app.post('/connector-pdf', async (req, res) => {
     ------------------------------------------------------- */
     const pdf = await page.pdf({
       format: 'A4',
-      //landscape: true,
-      scale: 0.9,
       printBackground: true,
       preferCSSPageSize: true,
       margin: { top: '70px', bottom: '60px', left: '40px', right: '40px' },
