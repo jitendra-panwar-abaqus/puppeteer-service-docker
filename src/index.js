@@ -344,7 +344,7 @@ app.post('/pdf', async (req, res) => {
       for (const [name, value] of Object.entries(fields)) {
         const el = document.querySelector(`[name="${name}"]`) || document.getElementById(name);
         if (!el) continue;
-        
+
 
         // IMPORTANT: never set value for file inputs (browser security restriction)
         if (el.tagName === 'INPUT' && el.type === 'file') {
@@ -671,13 +671,14 @@ app.post('/connector-pdf', async (req, res) => {
       for (const [name, value] of Object.entries(fields)) {
         const el = document.querySelector(`[name="${name}"]`) || document.getElementById(name);
         if (!el) continue;
-        
+
 
         // IMPORTANT: never set value for file inputs (browser security restriction)
         if (el.tagName === 'INPUT' && el.type === 'file') {
           continue;
         }
-        if (name.toLowerCase().includes('date') || name.toLowerCase().includes('date')) {
+
+        if (name.toLowerCase().includes('date') || name.toLowerCase().includes('week_ending')) {
           // Force type to text so the browser doesn't use its internal US-format display
           el.type = 'text';
           // Convert the raw date to the requested format
@@ -686,8 +687,15 @@ app.post('/connector-pdf', async (req, res) => {
         }
         if (el.tagName === 'SELECT') {
           el.innerHTML = `<option selected>${value}</option>`;
-        } else if (el.type === 'checkbox' || el.type === 'radio') {
+        } else if (el.type === 'checkbox') {
           el.checked = value === true || value === 'Yes' || value === 'true' || value === 'On' || value === 'on' || value === 'yes';
+        } else if (el.type === 'radio') {
+          const radioGroup = document.querySelectorAll(`input[name="${name}"]`);
+          radioGroup.forEach(radio => {
+            if (radio.value.toLowerCase() === String(value).toLowerCase()) {
+              radio.checked = true;
+            }
+          });
         } else if (el.tagName === 'TEXTAREA') {
           el.value = value ?? '';
           el.innerHTML = value ?? '';
@@ -699,6 +707,17 @@ app.post('/connector-pdf', async (req, res) => {
           el.value = value ?? '';
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (name === 'employee') {
+          const display = document.getElementById('employeeNameDisplay');
+          if (display) display.innerText = value; // Update the visible Div
+        }
+        if (name === 'deviceIdField') {
+          const display = document.getElementById('employeeNumberDisplay');
+          if (display) display.innerText = value; // Update the visible Div
+        }
+        if (el.style.display === 'none') {
+          el.style.display = 'inline-block';
         }
       }
 
